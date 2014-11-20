@@ -1,180 +1,254 @@
-#include <stdlib.h>
-#include <stdio.h>
 #include "sgct.h"
+
+#include <glm/gtx/euler_angles.hpp>
+
 #include <iostream>
 #include <sstream>
 
-sgct::Engine * gEngine;
+sgct::Engine* _engine;
 
-void myDrawFun();
-void myPreSyncFun();
-void myInitOGLFun();
-void myEncodeFun();
-void myDecodeFun();
-void myCleanUpFun();
+struct Box {
+	sgct_utils::SGCTBox* box;
 
-size_t myTextureHandle;
-sgct_utils::SGCTBox * myBox = NULL;
-GLint Matrix_Loc = -1;
+	size_t textureHandle;
 
-//variables to share across cluster
-sgct::SharedDouble curr_time(0.0);
+	sgct::SharedFloat posX;
+	sgct::SharedFloat posY;
+	sgct::SharedFloat posZ;
 
-sgct::SharedFloat posX(0.f);
-sgct::SharedFloat posY(0.f);
-sgct::SharedFloat posZ(0.f);
+	sgct::SharedFloat rotationAlpha;
+	sgct::SharedFloat rotationBeta;
+	sgct::SharedFloat rotationGamma;
+};
 
-sgct::SharedFloat rotation(0.f);
+const int nBoxes = 2;
+Box boxes[nBoxes];
 
-void controlCallback(const char* msg, int length, int index);
+GLint matrixLocation;
 
-int main( int argc, char* argv[] )
-{
-	gEngine = new sgct::Engine( argc, argv );
+void draw();
+void initOpenGL();
+void encode();
+void decode();
+void cleanup();
+void externalControl(const char* msg, int length, int index);
+void keyboardControl(int key, int action);
 
-	gEngine->setInitOGLFunction( myInitOGLFun );
-	gEngine->setDrawFunction( myDrawFun );
-	gEngine->setPreSyncFunction( myPreSyncFun );
-	gEngine->setCleanUpFunction( myCleanUpFun );
-	gEngine->setExternalControlCallback(controlCallback);
+int main(int argc, char* argv[]) {
+	_engine = new sgct::Engine( argc, argv );
 
-	if( !gEngine->init( sgct::Engine::OpenGL_3_3_Core_Profile ) )
-	{
-		delete gEngine;
+	_engine->setInitOGLFunction(initOpenGL);
+	_engine->setDrawFunction(draw);
+	_engine->setCleanUpFunction(cleanup);
+	_engine->setExternalControlCallback(externalControl);
+	_engine->setKeyboardCallbackFunction(keyboardControl);
+
+	if(!_engine->init( sgct::Engine::OpenGL_3_3_Core_Profile ))	{
+		delete _engine;
 		return EXIT_FAILURE;
 	}
 
-	sgct::SharedData::instance()->setEncodeFunction(myEncodeFun);
-	sgct::SharedData::instance()->setDecodeFunction(myDecodeFun);
+	sgct::SharedData::instance()->setEncodeFunction(encode);
+	sgct::SharedData::instance()->setDecodeFunction(decode);
 
 	// Main loop
-	gEngine->render();
+	_engine->render();
 
 	// Clean up
-	delete gEngine;
+	delete _engine;
 
 	// Exit program
-	exit( EXIT_SUCCESS );
+	exit(EXIT_SUCCESS);
 }
 
-void myDrawFun()
-{
-	glEnable( GL_DEPTH_TEST );
-	glEnable( GL_CULL_FACE );
+void draw() {
+	glEnable(GL_DEPTH_TEST);
+	glEnable(GL_CULL_FACE);
 
-	double speed = 25.0;
+	sgct::ShaderManager::instance()->bindShaderProgram("xform");
 
-	//create scene transform (animation)
-	glm::mat4 scene_mat = glm::translate( glm::mat4(1.0f), glm::vec3( 0.0f, 0.0f, -3.0f) );
-	scene_mat = glm::translate(scene_mat, glm::vec3(posX.getVal(), posY.getVal(), posZ.getVal()));
-	scene_mat = glm::rotate(scene_mat, rotation.getVal(), glm::vec3(0.f, -1.f, 0.f));
-	//scene_mat = glm::rotate( scene_mat, static_cast<float>( curr_time.getVal() * speed ), glm::vec3(0.0f, -1.0f, 0.0f));
-	//scene_mat = glm::rotate( scene_mat, static_cast<float>( curr_time.getVal() * (speed/2.0) ), glm::vec3(1.0f, 0.0f, 0.0f));
+	for (int i = 0; i < nBoxes; ++i) {
+		Box& box = boxes[i];
 
-	glm::mat4 MVP = gEngine->getActiveModelViewProjectionMatrix() * scene_mat;
+		glm::vec3 pos(box.posX.getVal(), box.posY.getVal(), box.posZ.getVal());
+		glm::mat4 model = glm::translate(glm::mat4(1.f), glm::vec3(0.f, 0.f, -3.f));
+		model = glm::translate(model, pos);
 
-	glActiveTexture(GL_TEXTURE0);
-	//glBindTexture( GL_TEXTURE_2D, sgct::TextureManager::instance()->getTextureByName("box") );
-	glBindTexture( GL_TEXTURE_2D, sgct::TextureManager::instance()->getTextureByHandle(myTextureHandle) );
+		glm::mat4 rotation = glm::yawPitchRoll(
+			box.rotationAlpha.getVal(),
+			box.rotationBeta.getVal(),
+			box.rotationGamma.getVal()
+		);
 
-	sgct::ShaderManager::instance()->bindShaderProgram( "xform" );
+		model = model * rotation;
 
-	glUniformMatrix4fv(Matrix_Loc, 1, GL_FALSE, &MVP[0][0]);
+		glm::mat4 MVP = _engine->getActiveModelViewProjectionMatrix() * model;
 
-	//draw the box
-	myBox->draw();
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, sgct::TextureManager::instance()->getTextureByHandle(box.textureHandle));
+		glUniformMatrix4fv(matrixLocation, 1, GL_FALSE, &MVP[0][0]);
+
+		//draw the box
+		box.box->draw();
+	}
 
 	sgct::ShaderManager::instance()->unBindShaderProgram();
 
-	glDisable( GL_CULL_FACE );
-	glDisable( GL_DEPTH_TEST );
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_DEPTH_TEST);
 }
 
-void myPreSyncFun()
-{
-	if( gEngine->isMaster() )
-	{
-		curr_time.setVal( sgct::Engine::getTime() );
-	}
-}
+void initOpenGL() {
+	std::vector<std::string> textures = {
+		"box.png",
+		"box.png"
+	};
 
-void myInitOGLFun()
-{
 	sgct::TextureManager::instance()->setAnisotropicFilterSize(8.0f);
 	sgct::TextureManager::instance()->setCompression(sgct::TextureManager::S3TC_DXT);
-	sgct::TextureManager::instance()->loadTexure(myTextureHandle, "box", "box.png", true);
+	for (int i = 0; i < nBoxes; ++i)
+		sgct::TextureManager::instance()->loadTexure(boxes[i].textureHandle, "box", textures[i], true);
 
-	myBox = new sgct_utils::SGCTBox(2.0f, sgct_utils::SGCTBox::Regular);
-	//myBox = new sgct_utils::SGCTBox(2.0f, sgct_utils::SGCTBox::CubeMap);
-	//myBox = new sgct_utils::SGCTBox(2.0f, sgct_utils::SGCTBox::SkyBox);
+	boxes[0].box = new sgct_utils::SGCTBox(2.0f, sgct_utils::SGCTBox::Regular);
+	boxes[1].box = new sgct_utils::SGCTBox(2.0f, sgct_utils::SGCTBox::Regular);
 
 	//Set up backface culling
 	glCullFace(GL_BACK);
 	glFrontFace(GL_CCW); //our polygon winding is counter clockwise
 
-	sgct::ShaderManager::instance()->addShaderProgram( "xform",
+	sgct::ShaderManager::instance()->addShaderProgram("xform",
 			"SimpleVertexShader.vertexshader",
-			"SimpleFragmentShader.fragmentshader" );
+			"SimpleFragmentShader.fragmentshader");
 
-	sgct::ShaderManager::instance()->bindShaderProgram( "xform" );
+	sgct::ShaderManager::instance()->bindShaderProgram("xform");
 
-	Matrix_Loc = sgct::ShaderManager::instance()->getShaderProgram( "xform").getUniformLocation( "MVP" );
-	GLint Tex_Loc = sgct::ShaderManager::instance()->getShaderProgram( "xform").getUniformLocation( "Tex" );
+	matrixLocation = sgct::ShaderManager::instance()->getShaderProgram("xform").getUniformLocation("MVP");
+	GLint Tex_Loc = sgct::ShaderManager::instance()->getShaderProgram("xform").getUniformLocation("Tex");
 	glUniform1i( Tex_Loc, 0 );
 
 	sgct::ShaderManager::instance()->unBindShaderProgram();
 }
 
-void myEncodeFun()
-{
-	sgct::SharedData::instance()->writeDouble(&curr_time);
+void encode() {
+	for (int i = 0; i < nBoxes; ++i) {
+		sgct::SharedData::instance()->writeFloat(&(boxes[i].posX));
+		sgct::SharedData::instance()->writeFloat(&(boxes[i].posY));
+		sgct::SharedData::instance()->writeFloat(&(boxes[i].posZ));
+
+		sgct::SharedData::instance()->writeFloat(&(boxes[i].rotationAlpha));
+		sgct::SharedData::instance()->writeFloat(&(boxes[i].rotationBeta));
+		sgct::SharedData::instance()->writeFloat(&(boxes[i].rotationGamma));
+	}
 }
 
-void myDecodeFun()
-{
-	sgct::SharedData::instance()->readDouble(&curr_time);
+void decode() {
+	for (int i = nBoxes - 1; i >= 0; ++i) {
+		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationGamma));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationBeta));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationAlpha));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].posZ));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].posY));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].posX));
+	}
 }
 
-void myCleanUpFun()
-{
-	if(myBox != NULL)
-		delete myBox;
+void cleanup() {
+	for (int i = 0; i < nBoxes; ++i)
+		delete boxes[i].box;
 }
 
-void controlCallback(const char* msg, int length, int index) {
+void externalControl(const char* msg, int length, int index) {
 	std::stringstream s;
 	if (length == 0)
 		return;
 
-	s.str(msg + 1);
+	int id;
 	switch (msg[0]) {
 		case '0':
+			id = 0;
+			break;
+		case '1':
+			id = 1;
+			break;
+		default:
+			id = -1;
+	}
+	std::cout << "ID (" << id << "): ";
+
+	s.str(msg + 2);
+	switch (msg[1]) {
+		case '0':
 		{
-			std::cout << "Position: " << msg + 1 << std::endl;
-			float v;
-			float oldV;
-			s >> v;
-			oldV = posX.getVal();
-			posX.setVal(oldV + v);
-			s >> v;
-			oldV = posY.getVal();
-			posY.setVal(oldV + v);
-			s >> v;
-			oldV = posZ.getVal();
-			posZ.setVal(oldV + v);
+			std::cout << "Position: " << msg + 2 << std::endl;
+			float x,y,z;
+			float oldX, oldY, oldZ;
+
+			s >> x;
+			s >> y;
+			s >> z;
+
+			oldX = boxes[id].posX.getVal();
+			oldY = boxes[id].posY.getVal();
+			oldZ = boxes[id].posZ.getVal();
+
+			boxes[id].posX.setVal(oldX + x);
+			boxes[id].posY.setVal(oldY + y);
+			boxes[id].posZ.setVal(oldZ + z);
 			break;
 		}
 		case '1':
 		{
-			std::cout << "Rotation: " << msg + 1 << std::endl;
-			float v;
-			float oldV;
-			s >> v;
-			oldV = rotation.getVal();
-			rotation.setVal(oldV + v);
+			std::cout << "Rotation: " << msg + 2 << std::endl;
+
+			float rotationAlpha, rotationBeta, rotationGamma;
+			float oldRotationAlpha, oldRotationBeta, oldRotationGamma;
+
+			s >> rotationAlpha;
+			s >> rotationBeta;
+			s >> rotationGamma;
+
+			oldRotationAlpha = boxes[id].rotationAlpha.getVal();
+			oldRotationBeta = boxes[id].rotationBeta.getVal();
+			oldRotationGamma = boxes[id].rotationGamma.getVal();
+
+			boxes[id].rotationAlpha.setVal(oldRotationAlpha + rotationAlpha);
+			boxes[id].rotationBeta.setVal(oldRotationBeta + rotationBeta);
+			boxes[id].rotationGamma.setVal(oldRotationGamma + rotationGamma);
 			break;
 		}
 		default:
 			std::cout << "Unknown command: " << msg << std::endl;
+	}
+}
+
+void keyboardControl(int key, int action) {
+	if (action != SGCT_PRESS)
+		return;
+	switch (key) {
+		case SGCT_KEY_I:
+			//_engine->setStatsGraphVisibility(!_engine->isDisplayInfoRendered());
+			_engine->setDisplayInfoVisibility(!_engine->isDisplayInfoRendered());
+			break;
+		case SGCT_KEY_K:
+		{
+			static bool state = false;
+
+			state = !state;
+			_engine->setStatsGraphVisibility(state);
+			break;
+		}
+		case SGCT_KEY_R:
+		{
+			for (int i = 0; i < nBoxes; ++i) {
+				boxes[i].posX.setVal(0.f);
+				boxes[i].posY.setVal(0.f);
+				boxes[i].posZ.setVal(0.f);
+
+				boxes[i].rotationAlpha.setVal(0.f);
+				boxes[i].rotationBeta.setVal(0.f);
+				boxes[i].rotationGamma.setVal(0.f);
+			}
+			break;
+		}
 	}
 }

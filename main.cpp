@@ -24,6 +24,9 @@ struct Box {
 const int nBoxes = 2;
 Box boxes[nBoxes];
 
+sgct_utils::SGCTSphere* environmentSphere;
+size_t backgroundTexture;
+
 GLint matrixLocation;
 
 void draw();
@@ -88,7 +91,6 @@ void draw() {
 		glBindTexture(GL_TEXTURE_2D, sgct::TextureManager::instance()->getTextureByHandle(box.textureHandle));
 		glUniformMatrix4fv(matrixLocation, 1, GL_FALSE, &MVP[0][0]);
 
-		//draw the box
 		box.box->draw();
 	}
 
@@ -100,17 +102,22 @@ void draw() {
 
 void initOpenGL() {
 	std::vector<std::string> textures = {
-		"box.png",
-		"box.png"
+		"C-Research.png",
+		"CoViDAg.png"
 	};
 
 	sgct::TextureManager::instance()->setAnisotropicFilterSize(8.0f);
 	sgct::TextureManager::instance()->setCompression(sgct::TextureManager::S3TC_DXT);
 	for (int i = 0; i < nBoxes; ++i)
-		sgct::TextureManager::instance()->loadTexure(boxes[i].textureHandle, "box", textures[i], true);
+		sgct::TextureManager::instance()->loadTexure(boxes[i].textureHandle, textures[i], textures[i], true);
 
-	boxes[0].box = new sgct_utils::SGCTBox(2.0f, sgct_utils::SGCTBox::Regular);
-	boxes[1].box = new sgct_utils::SGCTBox(2.0f, sgct_utils::SGCTBox::Regular);
+	sgct::TextureManager::instance()->loadTexure(backgroundTexture, "background", "background.png", true);
+
+	boxes[0].box = new sgct_utils::SGCTBox(2.f, sgct_utils::SGCTBox::Regular);
+	boxes[1].box = new sgct_utils::SGCTBox(2.f, sgct_utils::SGCTBox::Regular);
+
+	/*environmentSphere = new sgct_utils::SGCTSphere(14.7f, 10);*/
+	environmentSphere = new sgct_utils::SGCTSphere(2.f, 10);
 
 	//Set up backface culling
 	glCullFace(GL_BACK);
@@ -142,14 +149,24 @@ void encode() {
 }
 
 void decode() {
-	for (int i = nBoxes - 1; i >= 0; ++i) {
-		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationGamma));
-		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationBeta));
-		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationAlpha));
-		sgct::SharedData::instance()->readFloat(&(boxes[i].posZ));
-		sgct::SharedData::instance()->readFloat(&(boxes[i].posY));
+	for (int i = 0; i < nBoxes; ++i) {
 		sgct::SharedData::instance()->readFloat(&(boxes[i].posX));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].posY));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].posZ));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationAlpha));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationBeta));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationGamma));
 	}
+
+	/**for (int i = nBoxes - 1; i >= 0; --i) {
+		sgct::SharedData::instance()->readFloat(&(boxes[i].posX));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].posY));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].posZ));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationAlpha));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationBeta));
+		sgct::SharedData::instance()->readFloat(&(boxes[i].rotationGamma));
+	}
+	*/
 }
 
 void cleanup() {
@@ -173,13 +190,17 @@ void externalControl(const char* msg, int length, int index) {
 		default:
 			id = -1;
 	}
+#ifdef _DEBUG
 	std::cout << "ID (" << id << "): ";
+#endif
 
 	s.str(msg + 2);
 	switch (msg[1]) {
 		case '0':
 		{
+#ifdef _DEBUG
 			std::cout << "Position: " << msg + 2 << std::endl;
+#endif
 			float x,y,z;
 			float oldX, oldY, oldZ;
 
@@ -198,8 +219,9 @@ void externalControl(const char* msg, int length, int index) {
 		}
 		case '1':
 		{
+#ifdef _DEBUG
 			std::cout << "Rotation: " << msg + 2 << std::endl;
-
+#endif
 			float rotationAlpha, rotationBeta, rotationGamma;
 			float oldRotationAlpha, oldRotationBeta, oldRotationGamma;
 
